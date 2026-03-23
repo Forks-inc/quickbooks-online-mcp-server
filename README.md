@@ -46,6 +46,25 @@ This will:
 - Save the tokens to your `.env` file once authenticated
 - Close automatically when complete
 
+## Running the Server with MCP OAuth2 for Custom Connectors
+
+The server now supports acting as an OAuth2 authorization server for Claude's Custom Connectors. This allows Claude (Web, iOS, Android, Desktop) to securely authenticate with your server using an OAuth2 flow.
+
+To enable this:
+
+1. Add your desired security token in `.env`:
+   \`\`\`env
+   MCP_SECURITY_TOKEN=your_secure_random_token_here
+   MCP_SERVER_URL=https://your-public-url.com
+   \`\`\`
+
+2. Run the server with SSE transport:
+   \`\`\`bash
+   MCP_TRANSPORT=sse npm run start
+   \`\`\`
+   
+The server will start an Express application with OAuth2 discovery endpoints, dynamic registration, authorization flow, and the SSE transport at `/mcp/sse`.
+
 ## Usage
 
 After authentication is set up, you can use the MCP server to interact with QuickBooks Online. The server provides various tools for managing customers, estimates, bills, and more.

@@ -156,9 +156,17 @@ const main = async () => {
   RegisterTool(server, DeletePurchaseTool);
   RegisterTool(server, SearchPurchasesTool);
 
-  // Start receiving messages on stdin and sending messages on stdout
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  // Start the server based on the designated transport
+  const transportHeader = (process.env.MCP_TRANSPORT || "stdio").toLowerCase();
+
+  if (transportHeader === "sse" || transportHeader === "streamable-http") {
+    const { startOAuthServer } = await import("./server/oauth-server.js");
+    await startOAuthServer(server);
+  } else {
+    // Start receiving messages on stdin and sending messages on stdout
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+  }
 };
 
 main().catch((error) => {
