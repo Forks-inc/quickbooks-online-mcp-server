@@ -275,6 +275,12 @@ export async function startOAuthServer(server: McpServer) {
             return next();
         }
 
+        // Allow SSE connection establishment without authentication. 
+        // Actual MCP commands are sent via POST /mcp/messages which will be authenticated.
+        if (req.path === "/sse" && req.method === "GET") {
+            return next();
+        }
+
         const authHeader = req.headers.authorization || "";
         let isValid = false;
 
