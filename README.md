@@ -1,96 +1,64 @@
 # QuickBooks Online MCP Server
 
-This is a Model Context Protocol (MCP) server implementation for QuickBooks Online integration.
+Implementación premium del protocolo MCP para conectar QuickBooks Online con Claude. Soporta tanto uso local (stdio) como remoto (SSE con OAuth2).
 
-## Setup
+## 🚀 Inicio Rápido con Claude (Remoto / SSE)
 
-1. Install dependencies:
-```bash
-npm install
-```
+Este servidor está diseñado para funcionar como un "Custom Connector" en Claude. 
 
-2. Create a `.env` file in the root directory with the following variables:
+### 1. Requisitos
+- Una cuenta en [Intuit Developer](https://developer.intuit.com/).
+- Una App de QuickBooks con `Client ID` y `Client Secret`.
+- En el portal de Intuit, añade la URL de redirección: `https://tu-servidor.com/auth/qbo/callback`
+
+### 2. Configuración (.env)
+Crea un archivo `.env` basado en `.env.example`:
 ```env
-QUICKBOOKS_CLIENT_ID=your_client_id
-QUICKBOOKS_CLIENT_SECRET=your_client_secret
-QUICKBOOKS_ENVIRONMENT=sandbox
+QUICKBOOKS_CLIENT_ID=...
+QUICKBOOKS_CLIENT_SECRET=...
+QUICKBOOKS_ENVIRONMENT=production
+MCP_SERVER_URL=https://tu-servidor.com
+MCP_TRANSPORT=sse
+MCP_SECURITY_TOKEN=una-clave-larga-y-segura
 ```
 
-3. Get your Client ID and Client Secret:
-   - Go to the [Intuit Developer Portal](https://developer.intuit.com/)
-   - Create a new app or select an existing one
-   - Get the Client ID and Client Secret from the app's keys section
-   - Add `http://localhost:8000/callback` to the app's Redirect URIs
+### 3. Autenticación Transparente
+1. Agrega el servidor en Claude usando la URL `https://tu-servidor.com/mcp/sse`.
+2. Claude te pedirá hacer **"Log in"**.
+3. Al hacer clic, serás redirigido automáticamente a la página oficial de **QuickBooks**.
+4. Autoriza el acceso y ¡listo! El servidor guardará los tokens automáticamente y Claude tendrá acceso a tus herramientas.
 
-## Authentication
+---
 
-There are two ways to authenticate with QuickBooks Online:
+## 💻 Uso Local (Desktop)
 
-### Option 1: Using Environment Variables
+Si prefieres usarlo localmente en Claude Desktop:
 
-If you already have a refresh token and realm ID, you can add them directly to your `.env` file:
+1. Instala dependencias: `npm install`
+2. Configura tu `.env` con `MCP_TRANSPORT=stdio`.
+3. Ejecuta `pnpm run auth` para generar los tokens iniciales.
+4. Agrega la configuración a tu `claude_desktop_config.json`.
 
-```env
-QUICKBOOKS_REFRESH_TOKEN=your_refresh_token
-QUICKBOOKS_REALM_ID=your_realm_id
-```
+---
 
-### Option 2: Using the OAuth Flow
+## 🛠️ Herramientas Disponibles
 
-If you don't have a refresh token, you can use the built-in OAuth flow:
+El servidor expone herramientas completas (Crear, Leer, Buscar, Actualizar, Borrar) para:
 
-This will:
-- Start a temporary local server
-- Open your default browser automatically
-- Redirect you to QuickBooks for authentication
-- Save the tokens to your `.env` file once authenticated
-- Close automatically when complete
+- **Clientes (Customers)**
+- **Estimaciones (Estimates)**
+- **Facturas (Invoices)**
+- **Gastos (Purchases)**
+- **Proveedores (Vendors)**
+- **Cuentas (Accounts)**
+- **Asientos Contables (Journal Entries)**
+- **Pagos de Facturas (Bill Payments)**
+- **Productos/Servicios (Items)**
+- **Empleados (Employees)**
 
-## Running the Server with MCP OAuth2 for Custom Connectors
+---
 
-The server now supports acting as an OAuth2 authorization server for Claude's Custom Connectors. This allows Claude (Web, iOS, Android, Desktop) to securely authenticate with your server using an OAuth2 flow.
+## 🛡️ Seguridad
+El servidor utiliza **OAuth2 con PKCE** y soporte para **Dynamic Client Registration**, lo que lo hace compatible con todas las versiones de Claude (Web, iOS, Android y Desktop).
 
-To enable this:
-
-1. Add your desired security token in `.env`:
-   \`\`\`env
-   MCP_SECURITY_TOKEN=your_secure_random_token_here
-   MCP_SERVER_URL=https://your-public-url.com
-   \`\`\`
-
-2. Run the server with SSE transport:
-   \`\`\`bash
-   MCP_TRANSPORT=sse npm run start
-   \`\`\`
-   
-The server will start an Express application with OAuth2 discovery endpoints, dynamic registration, authorization flow, and the SSE transport at `/mcp/sse`.
-
-## Usage
-
-After authentication is set up, you can use the MCP server to interact with QuickBooks Online. The server provides various tools for managing customers, estimates, bills, and more.
-
-## Available Tools
-
-Added tools for Create, Delete, Get, Search, Update for the following entities:
-
-
-- Account
-- Bill Payment
-- Bill
-- Customer
-- Employee
-- Estimate
-- Invoice
-- Item
-- Journal Entry
-- Purchase
-- Vendor
-
-
-## Error Handling
-
-If you see an error message like "QuickBooks not connected", make sure to:
-
-1. Check that your `.env` file contains all required variables
-2. Verify that your tokens are valid and not expired
-
+Desarrollado por **Macom Engineering** 🛡️

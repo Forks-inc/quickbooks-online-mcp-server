@@ -1,6 +1,9 @@
 import express from "express";
 import cors from "cors";
 import crypto from "crypto";
+import fs from "fs";
+import path from "path";
+import OAuthClient from 'intuit-oauth';
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
@@ -9,6 +12,9 @@ const oauth_clients: Record<string, { client_secret: string, client_name: string
 const auth_codes: Record<string, { client_id: string, redirect_uri: string, code_challenge: string, code_challenge_method: string, scope: string, expires: number }> = {};
 const access_tokens: Record<string, { client_id: string, scope: string, expires: number }> = {};
 const refresh_tokens: Record<string, { client_id: string, scope: string, access_token: string }> = {};
+
+// Temporary storage to bridge Claude request and QBO callback
+const pending_claude_auths: Record<string, { client_id: string, redirect_uri: string, scope: string, state: string, code_challenge: string, code_challenge_method: string }> = {};
 
 function generateToken(bytes = 36): string {
     return crypto.randomBytes(bytes).toString("base64url");
@@ -24,82 +30,9 @@ function getServerUrl(): string {
     return (process.env.MCP_SERVER_URL || "").replace(/\/$/, "");
 }
 
-// ─── Login Page HTML ────────────────────────────────────────────────
-const getLoginPageHtml = (params: { client_id: string, client_name: string, redirect_uri: string, state: string, code_challenge: string, code_challenge_method: string, scope: string, error_display: string, error_message: string }) => `
-<!DOCTYPE html>
-<html lang="es">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>QBO MCP – Autorizar Acceso</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: #e0e0e0;
-        }
-        .card {
-            background: rgba(255,255,255,0.05);
-            backdrop-filter: blur(20px);
-            border: 1px solid rgba(255,255,255,0.1);
-            border-radius: 20px;
-            padding: 48px 40px;
-            max-width: 420px;
-            width: 90%;
-            box-shadow: 0 25px 50px rgba(0,0,0,0.3);
-        }
-        .logo { text-align: center; margin-bottom: 24px; font-size: 48px; }
-        h1 { text-align: center; font-size: 22px; margin-bottom: 8px; color: #fff; }
-        .subtitle { text-align: center; font-size: 14px; color: #aaa; margin-bottom: 32px; }
-        .client-name { color: #a78bfa; font-weight: 600; }
-        label { display: block; font-size: 13px; margin-bottom: 6px; color: #ccc; }
-        input[type=password] {
-            width: 100%; padding: 14px 16px; border-radius: 12px;
-            border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.08);
-            color: #fff; font-size: 16px; outline: none; transition: border-color 0.2s;
-        }
-        input[type=password]:focus { border-color: #a78bfa; }
-        .error { color: #f87171; font-size: 13px; margin-top: 8px; display: ${params.error_display}; }
-        button {
-            width: 100%; padding: 14px; border: none; border-radius: 12px;
-            background: linear-gradient(135deg, #7c3aed 0%, #a78bfa 100%);
-            color: #fff; font-size: 16px; font-weight: 600; cursor: pointer;
-            margin-top: 24px; transition: transform 0.1s, box-shadow 0.2s;
-        }
-        button:hover { transform: translateY(-1px); box-shadow: 0 8px 20px rgba(124,58,237,0.4); }
-        button:active { transform: translateY(0); }
-        .footer { text-align: center; margin-top: 24px; font-size: 12px; color: #666; }
-    </style>
-</head>
-<body>
-    <div class="card">
-        <div class="logo">🔐</div>
-        <h1>Autorizar Acceso</h1>
-        <p class="subtitle">
-            <span class="client-name">${params.client_name}</span> quiere conectarse a tu servidor QBO MCP.
-        </p>
-        <form method="POST" action="/authorize">
-            <input type="hidden" name="client_id" value="${params.client_id}">
-            <input type="hidden" name="redirect_uri" value="${params.redirect_uri}">
-            <input type="hidden" name="state" value="${params.state}">
-            <input type="hidden" name="code_challenge" value="${params.code_challenge}">
-            <input type="hidden" name="code_challenge_method" value="${params.code_challenge_method}">
-            <input type="hidden" name="scope" value="${params.scope}">
-            <label for="token">Token de Seguridad MCP</label>
-            <input type="password" name="token" id="token" placeholder="Ingresa tu MCP_SECURITY_TOKEN" required autofocus>
-            <p class="error">${params.error_message}</p>
-            <button type="submit">🚀 Autorizar Acceso</button>
-        </form>
-        <p class="footer">QBO MCP Server &middot; Macom Engineering 🛡️</p>
-    </div>
-</body>
-</html>
-`;
+function isQboConnected(): boolean {
+    return !!(process.env.QUICKBOOKS_REFRESH_TOKEN && process.env.QUICKBOOKS_REALM_ID);
+}
 
 export async function startOAuthServer(server: McpServer) {
     const app = express();
@@ -108,10 +41,15 @@ export async function startOAuthServer(server: McpServer) {
     app.use(cors());
 
     const serverUrl = getServerUrl();
-    const securityToken = process.env.MCP_SECURITY_TOKEN?.trim() || "";
 
-    console.log(`OAuth2 Server URL: ${serverUrl}`);
-    console.log(`OAuth2 Security Token configured: ${securityToken ? 'Yes' : 'No'}`);
+    const qboOauthClient = new OAuthClient({
+        clientId: process.env.QUICKBOOKS_CLIENT_ID || '',
+        clientSecret: process.env.QUICKBOOKS_CLIENT_SECRET || '',
+        environment: process.env.QUICKBOOKS_ENVIRONMENT as any || 'sandbox',
+        redirectUri: `${serverUrl}/auth/qbo/callback`,
+    });
+
+    console.log(`Seamless OAuth2 Server enabled at: ${serverUrl}`);
 
     app.get("/", (req, res) => {
         const html = `
@@ -126,20 +64,80 @@ export async function startOAuthServer(server: McpServer) {
                 h1 { color: #fff; font-size: 2.5rem; margin-bottom: 10px; }
                 p { color: #94a3b8; font-size: 1.1rem; }
                 .endpoint { font-family: monospace; background: #1e293b; padding: 12px 20px; border-radius: 8px; font-size: 1.2rem; color: #38bdf8; display: block; margin: 30px auto; width: fit-content; }
+                .qbo-status { margin-top: 20px; padding: 15px; border-radius: 8px; background: rgba(255,255,255,0.05); }
             </style>
         </head>
         <body>
             <div class="status">● ONLINE</div>
             <h1>QBO MCP Server</h1>
-            <p>Servidor MCP activo y listo para conectar con Claude.</p>
+            <p>Servidor MCP configurado para QuickBooks.</p>
             <span class="endpoint">${serverUrl}/mcp</span>
-            <p style="font-size: 0.9rem;">Configurador OAuth2 disponible para Claude Web & Mobile.</p>
+            <div class="qbo-status">
+                Estado QBO: ${isQboConnected() ? '<b style="color:#10b981;">Enlazado ✅</b>' : '<b style="color:#f59e0b;">Pendiente ⚠️</b>'}
+            </div>
         </body>
         </html>
         `;
         res.send(html);
     });
 
+    // ─── QBO OAuth Callback ───────────────────────────────────────────
+    app.get("/auth/qbo/callback", async (req, res) => {
+        try {
+            const bridgeId = req.query.state as string;
+            const claudeParams = pending_claude_auths[bridgeId];
+            delete pending_claude_auths[bridgeId];
+
+            const authResponse: any = await qboOauthClient.createToken(req.url);
+            const token = authResponse.json || authResponse.token;
+            const realmId = req.query.realmId;
+
+            console.log("✅ QuickBooks connection established!");
+
+            // Persist tokens
+            process.env.QUICKBOOKS_REFRESH_TOKEN = token.refresh_token;
+            process.env.QUICKBOOKS_REALM_ID = realmId as string;
+
+            const envPath = path.resolve(process.cwd(), '.env');
+            if (fs.existsSync(envPath)) {
+                let envContent = fs.readFileSync(envPath, 'utf8');
+                envContent = envContent.replace(/QUICKBOOKS_REFRESH_TOKEN=.*/g, `QUICKBOOKS_REFRESH_TOKEN=${token.refresh_token}`);
+                if (realmId) {
+                    envContent = envContent.replace(/QUICKBOOKS_REALM_ID=.*/g, `QUICKBOOKS_REALM_ID=${realmId}`);
+                }
+                fs.writeFileSync(envPath, envContent);
+            }
+
+            if (!claudeParams) {
+                return res.redirect('/');
+            }
+
+            // Successfully got QBO tokens, now respond to Claude's original request
+            const auth_code = generateToken(24);
+            auth_codes[auth_code] = {
+                client_id: claudeParams.client_id,
+                redirect_uri: claudeParams.redirect_uri,
+                code_challenge: claudeParams.code_challenge,
+                code_challenge_method: claudeParams.code_challenge_method,
+                scope: claudeParams.scope,
+                expires: Date.now() + 300000
+            };
+
+            let redirect_url = `${claudeParams.redirect_uri}?code=${encodeURIComponent(auth_code)}`;
+            if (claudeParams.state) {
+                redirect_url += `&state=${encodeURIComponent(claudeParams.state)}`;
+            }
+            
+            console.log(`Redirecting back to Claude with auth_code...`);
+            res.redirect(302, redirect_url);
+
+        } catch (e: any) {
+            console.error('QBO Auth Error:', e);
+            res.status(500).send('Error linking with QuickBooks.');
+        }
+    });
+
+    // ─── Standard OAuth2 Metadata ─────────────────────────────────────
     app.get("/.well-known/oauth-authorization-server", (req, res) => {
         res.json({
             issuer: serverUrl,
@@ -166,14 +164,6 @@ export async function startOAuthServer(server: McpServer) {
         });
     });
 
-    app.get("/.well-known/oauth-protected-resource", (req, res) => {
-        res.json({
-            resource: serverUrl,
-            authorization_servers: [serverUrl],
-            scopes_supported: ["mcp:tools"],
-        });
-    });
-
     app.post("/register", (req, res) => {
         const client_data = req.body || {};
         const client_id = generateToken(18);
@@ -187,74 +177,34 @@ export async function startOAuthServer(server: McpServer) {
             token_endpoint_auth_method: client_data.token_endpoint_auth_method || "none",
         };
 
-        console.log(`OAuth2 client registered: ${client_id} (${oauth_clients[client_id].client_name})`);
-
-        res.status(201).json({
-            client_id,
-            client_secret,
-            client_name: oauth_clients[client_id].client_name,
-            redirect_uris: oauth_clients[client_id].redirect_uris,
-            grant_types: oauth_clients[client_id].grant_types,
-            token_endpoint_auth_method: oauth_clients[client_id].token_endpoint_auth_method,
-        });
+        res.status(201).json({ client_id, client_secret });
     });
 
+    // ─── MAIN AUTHORIZE ENDPOINT (Claude hits this) ──────────────────
     app.get("/authorize", (req, res) => {
-        const client_id = (req.query.client_id as string) || "";
-        const redirect_uri = (req.query.redirect_uri as string) || "";
-        const state = (req.query.state as string) || "";
-        const code_challenge = (req.query.code_challenge as string) || "";
-        const code_challenge_method = (req.query.code_challenge_method as string) || "S256";
-        const scope = (req.query.scope as string) || "mcp:tools";
-
-        let client_name = "Claude";
-        if (oauth_clients[client_id]) {
-            client_name = oauth_clients[client_id].client_name;
-        }
-
-        res.send(getLoginPageHtml({
-            client_id, client_name, redirect_uri, state, code_challenge, code_challenge_method, scope,
-            error_display: "none", error_message: ""
-        }));
-    });
-
-    app.post("/authorize", (req, res) => {
-        const token = (req.body.token || "").trim();
-        const client_id = req.body.client_id || "";
-        const redirect_uri = req.body.redirect_uri || "";
-        const state = req.body.state || "";
-        const code_challenge = req.body.code_challenge || "";
-        const code_challenge_method = req.body.code_challenge_method || "S256";
-        const scope = req.body.scope || "mcp:tools";
-
-        if (token !== securityToken) {
-            console.warn(`OAuth2 authorization failed: invalid token from ${req.ip}`);
-            let client_name = "Claude";
-            if (oauth_clients[client_id]) {
-                client_name = oauth_clients[client_id].client_name;
-            }
-            res.send(getLoginPageHtml({
-                client_id, client_name, redirect_uri, state, code_challenge, code_challenge_method, scope,
-                error_display: "block", error_message: "❌ Token inválido. Verifica tu MCP_SECURITY_TOKEN."
-            }));
-            return;
-        }
-
-        const auth_code = generateToken(24);
-        auth_codes[auth_code] = {
-            client_id, redirect_uri, code_challenge, code_challenge_method, scope,
-            expires: Date.now() + 300000 // 5 minutes
+        const bridgeId = generateToken(12);
+        
+        // Save Claude's parameters to resume after QBO callback
+        pending_claude_auths[bridgeId] = {
+            client_id: (req.query.client_id as string) || "",
+            redirect_uri: (req.query.redirect_uri as string) || "",
+            state: (req.query.state as string) || "",
+            code_challenge: (req.query.code_challenge as string) || "",
+            code_challenge_method: (req.query.code_challenge_method as string) || "S256",
+            scope: (req.query.scope as string) || "mcp:tools"
         };
 
-        console.log(`OAuth2 authorization granted for client ${client_id}`);
+        // Redirect immediately to QuickBooks authorize
+        const authUri = qboOauthClient.authorizeUri({
+            scope: [OAuthClient.scopes.Accounting],
+            state: bridgeId,
+        });
 
-        let redirect_url = `${redirect_uri}?code=${encodeURIComponent(auth_code)}`;
-        if (state) {
-            redirect_url += `&state=${encodeURIComponent(state)}`;
-        }
-        res.redirect(302, redirect_url);
+        console.log(`Claude connection started. Redirecting user to QuickBooks...`);
+        res.redirect(authUri as any);
     });
 
+    // ─── Token Exchange ───────────────────────────────────────────────
     app.post("/token", (req, res) => {
         const grant_type = req.body.grant_type;
         
@@ -262,49 +212,23 @@ export async function startOAuthServer(server: McpServer) {
             const code = req.body.code;
             const code_verifier = req.body.code_verifier;
 
-            if (!auth_codes[code]) {
-                console.warn("OAuth2 token request: invalid authorization code");
-                return res.status(400).json({ error: "invalid_grant", error_description: "Invalid authorization code" });
-            }
+            if (!auth_codes[code]) return res.status(400).json({ error: "invalid_grant" });
 
             const code_data = auth_codes[code];
             delete auth_codes[code];
 
-            if (Date.now() > code_data.expires) {
-                console.warn("OAuth2 token request: expired authorization code");
-                return res.status(400).json({ error: "invalid_grant", error_description: "Authorization code expired" });
-            }
-
-            const req_client_id = req.body.client_id;
-            if (req_client_id && req_client_id !== code_data.client_id) {
-                console.warn(`OAuth2 token request: client_id mismatch (${req_client_id} vs ${code_data.client_id})`);
-                return res.status(400).json({ error: "invalid_client", error_description: "client_id mismatch" });
-            }
+            if (Date.now() > code_data.expires) return res.status(400).json({ error: "invalid_grant", error_description: "Expired" });
 
             if (code_data.code_challenge && code_verifier) {
-                if (!verifyPkce(code_verifier, code_data.code_challenge)) {
-                    console.warn("OAuth2 token request: PKCE verification failed");
-                    return res.status(400).json({ error: "invalid_grant", error_description: "PKCE verification failed" });
-                }
+                if (!verifyPkce(code_verifier, code_data.code_challenge)) return res.status(400).json({ error: "invalid_grant" });
             }
 
             const new_access_token = generateToken();
             const new_refresh_token = generateToken();
             const expires_in = 3600;
 
-            access_tokens[new_access_token] = {
-                client_id: code_data.client_id,
-                scope: code_data.scope,
-                expires: Date.now() + (expires_in * 1000)
-            };
-
-            refresh_tokens[new_refresh_token] = {
-                client_id: code_data.client_id,
-                scope: code_data.scope,
-                access_token: new_access_token
-            };
-
-            console.log(`OAuth2 access token issued for client ${code_data.client_id}`);
+            access_tokens[new_access_token] = { client_id: code_data.client_id, scope: code_data.scope, expires: Date.now() + (expires_in * 1000) };
+            refresh_tokens[new_refresh_token] = { client_id: code_data.client_id, scope: code_data.scope, access_token: new_access_token };
 
             return res.json({
                 access_token: new_access_token,
@@ -315,91 +239,48 @@ export async function startOAuthServer(server: McpServer) {
             });
         } else if (grant_type === "refresh_token") {
             const rt = req.body.refresh_token;
-
-            if (!refresh_tokens[rt]) {
-                return res.status(400).json({ error: "invalid_grant", error_description: "Invalid refresh token" });
-            }
+            if (!refresh_tokens[rt]) return res.status(400).json({ error: "invalid_grant" });
 
             const rt_data = refresh_tokens[rt];
             delete refresh_tokens[rt];
-
-            const req_client_id = req.body.client_id;
-            if (req_client_id && req_client_id !== rt_data.client_id) {
-                console.warn(`OAuth2 refresh request: client_id mismatch (${req_client_id} vs ${rt_data.client_id})`);
-                return res.status(400).json({ error: "invalid_client", error_description: "client_id mismatch" });
-            }
-
-            const old_at = rt_data.access_token;
-            if (access_tokens[old_at]) {
-                delete access_tokens[old_at];
-            }
+            if (access_tokens[rt_data.access_token]) delete access_tokens[rt_data.access_token];
 
             const new_access_token = generateToken();
             const new_refresh_token = generateToken();
             const expires_in = 3600;
 
-            access_tokens[new_access_token] = {
-                client_id: rt_data.client_id,
-                scope: rt_data.scope,
-                expires: Date.now() + (expires_in * 1000)
-            };
+            access_tokens[new_access_token] = { client_id: rt_data.client_id, scope: rt_data.scope, expires: Date.now() + (expires_in * 1000) };
+            refresh_tokens[new_refresh_token] = { client_id: rt_data.client_id, scope: rt_data.scope, access_token: new_access_token };
 
-            refresh_tokens[new_refresh_token] = {
-                client_id: rt_data.client_id,
-                scope: rt_data.scope,
-                access_token: new_access_token
-            };
-
-            console.log(`OAuth2 token refreshed for client ${rt_data.client_id}`);
-
-            return res.json({
-                access_token: new_access_token,
-                token_type: "Bearer",
-                expires_in,
-                refresh_token: new_refresh_token,
-                scope: rt_data.scope
-            });
+            return res.json({ access_token: new_access_token, token_type: "Bearer", expires_in, refresh_token: new_refresh_token });
         }
-
         return res.status(400).json({ error: "unsupported_grant_type" });
     });
 
-    // ─── MCP Endpoints Authentication ──────────────────────────────────
+    // ─── MCP Endpoint Security ────────────────────────────────────────
     app.use("/mcp", (req, res, next) => {
-        if (!securityToken) {
-            return next();
-        }
-
         const authHeader = req.headers.authorization || "";
         let isValid = false;
 
+        const securityToken = process.env.MCP_SECURITY_TOKEN?.trim();
+
         if (authHeader.startsWith("Bearer ")) {
             const bearerToken = authHeader.substring(7).trim();
-            if (bearerToken === securityToken) {
+            if (securityToken && bearerToken === securityToken) {
                 isValid = true;
             } else if (access_tokens[bearerToken]) {
                 const token_data = access_tokens[bearerToken];
-                if (Date.now() < token_data.expires) {
-                    isValid = true;
-                } else {
-                    delete access_tokens[bearerToken];
-                    console.log("OAuth2 access token expired, removed");
-                }
+                if (Date.now() < token_data.expires) isValid = true;
+                else delete access_tokens[bearerToken];
             }
         }
 
         if (!isValid) {
             const queryToken = req.query.token as string || "";
-            if (queryToken === securityToken) {
-                isValid = true;
-            }
+            if (securityToken && queryToken === securityToken) isValid = true;
         }
 
-        if (!isValid) {
-            console.warn(`UNAUTHORIZED: ${req.path} from ${req.ip}.`);
-            return res.status(401).json({ error: "Unauthorized. Please authenticate via OAuth2 or Bearer token." });
-        }
-
+        if (!isValid) return res.status(401).json({ error: "Unauthorized" });
         next();
     });
 
@@ -409,30 +290,17 @@ export async function startOAuthServer(server: McpServer) {
     app.get("/mcp/sse", async (req, res) => {
         const transport = new SSEServerTransport("/mcp/messages", res);
         await server.connect(transport);
-        
-        const sessionId = transport.sessionId;
-        sseTransports.set(sessionId, transport);
-        
-        res.on("close", () => {
-            sseTransports.delete(sessionId);
-        });
+        sseTransports.set(transport.sessionId, transport);
+        res.on("close", () => sseTransports.delete(transport.sessionId));
     });
 
     app.post("/mcp/messages", async (req, res) => {
-        const sessionId = req.query.sessionId as string;
-        const transport = sseTransports.get(sessionId);
-        
-        if (!transport) {
-            return res.status(404).send("Session not found");
-        }
-        
+        const transport = sseTransports.get(req.query.sessionId as string);
+        if (!transport) return res.status(404).send("Session not found");
         await transport.handlePostMessage(req, res);
     });
 
     const port = process.env.PORT ? parseInt(process.env.PORT) : 8000;
     const host = process.env.HOST || "0.0.0.0";
-    
-    app.listen(port, host, () => {
-        console.log(`QBO MCP Server listening on ${host}:${port} via Express (SSE + OAuth2)`);
-    });
+    app.listen(port, host, () => console.log(`QBO MCP Server running on ${host}:${port}`));
 }

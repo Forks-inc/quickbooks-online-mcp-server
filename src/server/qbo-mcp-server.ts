@@ -9,10 +9,7 @@ export class QuickbooksMCPServer {
     if (QuickbooksMCPServer.instance === null) {
       QuickbooksMCPServer.instance = new McpServer({
         name: "QuickBooks Online MCP Server",
-        version: "1.0.0",
-        capabilities: {
-          tools: {},
-        },
+        version: "1.0.0"
       });
     }
     return QuickbooksMCPServer.instance;
