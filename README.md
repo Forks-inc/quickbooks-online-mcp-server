@@ -6,10 +6,14 @@ Implementación premium del protocolo MCP para conectar QuickBooks Online con Cl
 
 Este servidor está diseñado para funcionar como un "Custom Connector" en Claude. 
 
-### 1. Requisitos
-- Una cuenta en [Intuit Developer](https://developer.intuit.com/).
-- Una App de QuickBooks con `Client ID` y `Client Secret`.
-- En el portal de Intuit, añade la URL de redirección: `https://tu-servidor.com/auth/qbo/callback`
+### 1. Configuración en Intuit Developer
+1. Entra en [developer.intuit.com](https://developer.intuit.com/) y crea una App.
+2. Selecciona **QuickBooks Online and Payments**.
+3. Ve a **Keys & OAuth** (ya sea *Sandbox* o *Production*).
+4. Copia tu `Client ID` y `Client Secret` en el archivo `.env`.
+5. **MUY IMPORTANTE**: En la sección de **Redirect URIs**, añade la URL de tu servidor:
+   `https://tu-dominio-dokploy.com/auth/qbo/callback`
+   *(Si pruebas localmente, añade también `http://localhost:8000/callback`)*.
 
 ### 2. Configuración (.env)
 Crea un archivo `.env` basado en `.env.example`:
