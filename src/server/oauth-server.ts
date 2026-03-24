@@ -138,7 +138,7 @@ export async function startOAuthServer(server: McpServer) {
     });
 
     // ─── Standard OAuth2 Metadata ─────────────────────────────────────
-    app.get("/.well-known/oauth-authorization-server", (req, res) => {
+    const wellKnownAuth = (req: any, res: any) => {
         res.json({
             issuer: serverUrl,
             authorization_endpoint: `${serverUrl}/authorize`,
@@ -150,9 +150,9 @@ export async function startOAuthServer(server: McpServer) {
             token_endpoint_auth_methods_supported: ["client_secret_post", "none"],
             scopes_supported: ["mcp:tools"],
         });
-    });
+    };
 
-    app.get("/.well-known/openid-configuration", (req, res) => {
+    const wellKnownOpenId = (req: any, res: any) => {
         res.json({
             issuer: serverUrl,
             authorization_endpoint: `${serverUrl}/authorize`,
@@ -162,7 +162,13 @@ export async function startOAuthServer(server: McpServer) {
             grant_types_supported: ["authorization_code", "refresh_token"],
             code_challenge_methods_supported: ["S256"],
         });
-    });
+    };
+
+    app.get("/.well-known/oauth-authorization-server", wellKnownAuth);
+    app.get("/mcp/sse/.well-known/oauth-authorization-server", wellKnownAuth);
+    
+    app.get("/.well-known/openid-configuration", wellKnownOpenId);
+    app.get("/mcp/sse/.well-known/openid-configuration", wellKnownOpenId);
 
     app.post("/register", (req, res) => {
         const client_data = req.body || {};
@@ -257,8 +263,18 @@ export async function startOAuthServer(server: McpServer) {
         return res.status(400).json({ error: "unsupported_grant_type" });
     });
 
-    // ─── MCP Endpoint Security ────────────────────────────────────────
+    // ─── Middleware de Seguridad ──────────────────────────────────────
+    app.use((req, res, next) => {
+        console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+        next();
+    });
+
     app.use("/mcp", (req, res, next) => {
+        // Allow OAuth2 discovery endpoints to be accessed without authentication
+        if (req.path.includes(".well-known")) {
+            return next();
+        }
+
         const authHeader = req.headers.authorization || "";
         let isValid = false;
 
@@ -280,7 +296,10 @@ export async function startOAuthServer(server: McpServer) {
             if (securityToken && queryToken === securityToken) isValid = true;
         }
 
-        if (!isValid) return res.status(401).json({ error: "Unauthorized" });
+        if (!isValid) {
+            console.log("❌ Unauthorized attempt to MCP endpoint:", req.url);
+            return res.status(401).json({ error: "Unauthorized" });
+        }
         next();
     });
 
@@ -288,19 +307,42 @@ export async function startOAuthServer(server: McpServer) {
     const sseTransports = new Map<string, SSEServerTransport>();
 
     app.get("/mcp/sse", async (req, res) => {
+        console.log("📡 New SSE Connection request");
+        // Disable buffering for proxies (Nginx/Traefik)
+        res.setHeader('X-Accel-Buffering', 'no');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        
         const transport = new SSEServerTransport("/mcp/messages", res);
         await server.connect(transport);
         sseTransports.set(transport.sessionId, transport);
-        res.on("close", () => sseTransports.delete(transport.sessionId));
+        
+        console.log(`✅ SSE Session started: ${transport.sessionId}`);
+        
+        res.on("close", () => {
+            console.log(`🔌 SSE Session closed: ${transport.sessionId}`);
+            sseTransports.delete(transport.sessionId);
+        });
     });
 
     app.post("/mcp/messages", async (req, res) => {
-        const transport = sseTransports.get(req.query.sessionId as string);
-        if (!transport) return res.status(404).send("Session not found");
+        const sessionId = req.query.sessionId as string;
+        const transport = sseTransports.get(sessionId);
+        
+        if (!transport) {
+            console.log(`❌ Message session not found: ${sessionId}`);
+            return res.status(404).send("Session not found");
+        }
+        
         await transport.handlePostMessage(req, res);
     });
 
     const port = process.env.PORT ? parseInt(process.env.PORT) : 8000;
     const host = process.env.HOST || "0.0.0.0";
-    app.listen(port, host, () => console.log(`QBO MCP Server running on ${host}:${port}`));
+    app.listen(port, host, () => {
+        console.log("--------------------------------------------------");
+        console.log(`🚀 QBO MCP Server running on ${host}:${port}`);
+        console.log(`🔗 Transport: SSE | Base URL: ${serverUrl}`);
+        console.log("--------------------------------------------------");
+    });
 }
