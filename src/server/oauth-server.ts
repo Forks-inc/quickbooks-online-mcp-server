@@ -304,6 +304,7 @@ export async function startOAuthServer(server: McpServer) {
 
         if (!isValid) {
             console.log("❌ Unauthorized attempt to MCP endpoint:", req.url);
+            res.setHeader("WWW-Authenticate", 'Bearer realm="mcp"');
             return res.status(401).json({ error: "Unauthorized" });
         }
         next();
